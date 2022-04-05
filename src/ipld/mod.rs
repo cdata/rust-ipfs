@@ -10,11 +10,11 @@ pub mod dag_json;
 #[macro_use]
 pub mod ipld_macro;
 
-use cid::{Cid, Codec};
+use cid::Cid;
 use dag_cbor::DagCborCodec;
 use dag_json::DagJsonCodec;
-use multihash::Multihash;
-use std::collections::BTreeMap;
+use multihash::{Code, Multihash, MultihashDigest};
+use std::{collections::BTreeMap, convert::TryFrom};
 use thiserror::Error;
 
 /// Ipld
@@ -217,7 +217,7 @@ pub enum BlockError {
     InvalidHash(Multihash),
     /// The codec is unsupported.
     #[error("Unsupported codec {0:?}.")]
-    UnsupportedCodec(cid::Codec),
+    UnsupportedCodec(u64),
     /// The multihash is unsupported.
     #[error("Unsupported multihash {0:?}.")]
     UnsupportedMultihash(multihash::Code),
@@ -255,19 +255,27 @@ pub fn validate(cid: &Cid, data: &[u8]) -> Result<(), BlockError> {
     if data.len() > MAX_BLOCK_SIZE {
         return Err(BlockError::BlockTooLarge(data.len()));
     }
-    let hash = cid.hash().algorithm().digest(data);
-    if hash.as_ref() != cid.hash() {
+    let hash = Code::try_from(cid.hash().code())
+        .map_err(|_| BlockError::Cid(cid::Error::InvalidCidV0Multihash))?;
+
+    let hash = hash.digest(data);
+
+    if hash != *cid.hash() {
         return Err(BlockError::InvalidHash(hash));
     }
     Ok(())
 }
 
+pub const DAG_CBOR_CODEC: u64 = 0x71;
+pub const DAG_JSON_CODEC: u64 = 0x0129;
+pub const RAW_CODEC: u64 = 0x55;
+
 /// Encode ipld to bytes.
-pub fn encode_ipld(ipld: &Ipld, codec: Codec) -> Result<Box<[u8]>, BlockError> {
+pub fn encode_ipld(ipld: &Ipld, codec: u64) -> Result<Box<[u8]>, BlockError> {
     let bytes = match codec {
-        Codec::DagCBOR => DagCborCodec::encode(ipld)?,
-        Codec::DagJSON => DagJsonCodec::encode(ipld)?,
-        Codec::Raw => {
+        DAG_CBOR_CODEC => DagCborCodec::encode(ipld)?,
+        DAG_JSON_CODEC => DagJsonCodec::encode(ipld)?,
+        RAW_CODEC => {
             if let Ipld::Bytes(bytes) = ipld {
                 bytes.to_vec().into_boxed_slice()
             } else {
@@ -282,9 +290,9 @@ pub fn encode_ipld(ipld: &Ipld, codec: Codec) -> Result<Box<[u8]>, BlockError> {
 /// Decode block to ipld.
 pub fn decode_ipld(cid: &Cid, data: &[u8]) -> Result<Ipld, BlockError> {
     let ipld = match cid.codec() {
-        Codec::DagCBOR => DagCborCodec::decode(data)?,
-        Codec::DagJSON => DagJsonCodec::decode(data)?,
-        Codec::Raw => Ipld::Bytes(data.to_vec()),
+        DAG_CBOR_CODEC => DagCborCodec::decode(data)?,
+        DAG_JSON_CODEC => DagJsonCodec::decode(data)?,
+        RAW_CODEC => Ipld::Bytes(data.to_vec()),
         _ => return Err(BlockError::UnsupportedCodec(cid.codec())),
     };
     Ok(ipld)
